@@ -1,0 +1,1185 @@
+# ============================================================
+# SACRSN HYBRID: THE PERFECT OMEGA
+# Naming Convention: v40.4 (Complex Recurrent State Network)
+# Data Source: v40.4 (ANN Text Only)
+# conserved Features: All Logic from v37, v40.1, v40.4, v40.5
+# ============================================================
+
+import os
+import time
+import random
+import re
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import networkx as nx
+from collections import defaultdict
+
+# ==========================================
+# 0. Determinism
+# ==========================================
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Running on: {DEVICE}")
+
+# ==========================================
+# 1. Configuration (Superset of All Versions)
+# ==========================================
+CONFIG = {
+    "seq_len": 128,
+    "embedding_dim": 512,
+    
+    # Architecture / MoE Settings (v40.4 Naming)
+    "n_modules": 4,           
+    "temperature": 1.0,  
+    "soft_attention_weight": 0.3,     
+    "regularizer_weight": 0.1,     
+    "shadow_weight": 0.3,    # v37 Feature conserved
+    
+    # Physics & Attractors (All versions conserved)
+    "refinement_steps": 3,        # v40.4
+    "inverse_temperature": 50.0,  # v40.4
+    "hopfield_steps": 3,          # v40.1
+    "hopfield_beta": 50.0,        # v40.1
+    
+    # Graph & Weight Settings
+    "synaptic_decay": 0.001,   
+    "pruning_threshold": 0.01, 
+    "momentum": 0.99,     
+    "entropy_weight": 0.05,    
+    "transition_diff_weight": 0.2,     
+    "trust_momentum": 0.95,     
+    
+    # Insight & Surgery (v40.5 Features)
+    "insight_error_threshold": 0.8,
+    "insight_flux_threshold": 0.7,
+    "restructure_strength": 0.15,
+    "courage_weight": 0.05,       # v40.1 Feature
+    
+    # Adaptive Parameters
+    "plasticity_base": 0.5,    
+    "plasticity_scale": 2.0,   
+    
+    # Adaptive Computation Time (ACT)
+    "max_steps": 16, 
+    "halt_threshold": 0.995,   
+    "step_penalty": 0.0001,  
+    
+    # Memory Structure
+    "use_stack": True,
+    "stack_size": 32,
+    
+    # Random Inputs (v40.4 Naming)
+    "n_perspective_embs": 2,
+    "n_audio_embs": 8,
+    "n_chem_embs": 16,        
+    "sparse_reg_weight": 0.001,    
+    "focus_weight": 0.001,        # v37 Feature
+    
+    # Losses (All versions)
+    "commitment_cost": 0.01,
+    "prior_bias_scale": 0.8,
+    "consistency_loss_weight": 0.005,
+    "diversity_loss_weight": 0.5,
+    "prediction_error_weight": 0.1,
+    "uncertainty_loss_weight": 0.01,
+    "ethical_weight": 0.005,      # v37 Feature
+    
+    # Training
+    "epochs": 3000,
+    "learning_rate": 1e-4,
+    "grad_clip": 0.5,
+    "eps": 1e-6,
+    "warmup_epochs": 0
+}
+
+# ==========================================
+# 2. Data (ANN Text Only - v40.4) & BPE
+# ==========================================
+TEXT_DATA = """
+Artificial neural networks (ANNs) are computing systems inspired by the biological neural networks that constitute animal brains.
+An ANN is based on a collection of connected units or nodes called artificial neurons, which loosely model the neurons in a biological brain.
+Each connection, like the synapses in a biological brain, can transmit a signal to other neurons. 
+An artificial neuron receives a signal then processes it and can signal neurons connected to it. 
+The "signal" at a connection is a real number, and the output of each neuron is computed by some non-linear function of the sum of its inputs.
+The connections are called edges. Neurons and edges typically have a weight that adjusts as learning proceeds. 
+The weight increases or decreases the strength of the signal at a connection. 
+Neurons may have a threshold such that a signal is sent only if the aggregate signal crosses that threshold. 
+Typically, neurons are aggregated into layers. Different layers may perform different transformations on their inputs. 
+Signals travel from the first layer (the input layer), to the last layer (the output layer), possibly after traversing the layers multiple times.
+Recurrent neural networks (RNN) are a class of artificial neural networks where connections between nodes can create a cycle, allowing output from some nodes to affect subsequent input to the same nodes.
+This allows it to exhibit temporal dynamic behavior. Derived from feedforward neural networks, RNNs can use their internal state (memory) to process variable length sequences of inputs.
+"""
+
+class BPETokenizer:
+    def __init__(self):
+        self.merges = {} 
+        self.vocab = {}  
+        self.vocab_size = 0
+
+    def get_stats(self, ids):
+        counts = {}
+        for pair in zip(ids, ids[1:]):
+            counts[pair] = counts.get(pair, 0) + 1
+        return counts
+
+    def merge(self, ids, pair, idx):
+        newids = []
+        i = 0
+        while i < len(ids):
+            if i < len(ids) - 1 and ids[i] == pair[0] and ids[i+1] == pair[1]:
+                newids.append(idx)
+                i += 2
+            else:
+                newids.append(ids[i])
+                i += 1
+        return newids
+
+    def train(self, text, vocab_size=None):
+        ids = list(text.encode("utf-8"))
+        if vocab_size is None:
+            approx_words = len(set(re.findall(r"[\w']+|[^\s\w]", text)))
+            target_merges = approx_words + 500 
+        else:
+            target_merges = vocab_size - 256
+
+        print(f"BPE: Scanning...")
+        for i in range(target_merges):
+            stats = self.get_stats(ids)
+            if not stats: break 
+            pair = max(stats, key=stats.get)
+            if stats[pair] < 2:
+                break
+            idx = 256 + i
+            ids = self.merge(ids, pair, idx)
+            self.merges[pair] = idx
+            
+        self.vocab_size = 256 + len(self.merges)
+        print(f"BPE Training Complete. Final Vocab Size: {self.vocab_size}")
+
+    def encode(self, text):
+        ids = list(text.encode("utf-8"))
+        while len(ids) >= 2:
+            stats = self.get_stats(ids)
+            pair = min(stats, key=lambda p: self.merges.get(p, float("inf")))
+            if pair not in self.merges: break 
+            idx = self.merges[pair]
+            ids = self.merge(ids, pair, idx)
+        return torch.tensor(ids, dtype=torch.long).to(DEVICE)
+
+    def decode(self, ids):
+        vocab = {idx: bytes([idx]) for idx in range(256)}
+        for (p0, p1), idx in self.merges.items():
+            vocab[idx] = vocab[p0] + vocab[p1]
+        
+        if isinstance(ids, torch.Tensor): ids = ids.tolist()
+        if isinstance(ids, int): ids = [ids]
+        res = b"".join(vocab.get(idx, b"") for idx in ids)
+        return res.decode("utf-8", errors="replace")
+
+# Initialize BPE
+tokenizer = BPETokenizer()
+tokenizer.train(TEXT_DATA)
+data_tensor = tokenizer.encode(TEXT_DATA)
+vocab_size = tokenizer.vocab_size
+
+print(f"First 10 token IDs: {data_tensor[:10].tolist()}")
+print(f"First 10 decoded: {tokenizer.decode(data_tensor[:10])}")
+
+CONFIG["n_symbols"] = int(vocab_size * 1.2)
+print(f"--> Auto-updated n_symbols to: {CONFIG['n_symbols']}")
+
+# ==========================================
+# 3. Complex Primitives
+# ==========================================
+class ComplexLayerNorm(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.scale = nn.Parameter(torch.ones(dim))
+        self.shift = nn.Parameter(torch.zeros(dim))
+    def forward(self, z):
+        mag = torch.abs(z) + CONFIG["eps"]
+        mean = mag.mean(dim=-1, keepdim=True)
+        var = mag.var(dim=-1, keepdim=True)
+        norm_mag = (mag - mean) / torch.sqrt(var + CONFIG["eps"])
+        norm_mag = norm_mag * self.scale + self.shift
+        phase = torch.angle(z)
+        return torch.complex(norm_mag * torch.cos(phase), norm_mag * torch.sin(phase))
+
+class ModReLU(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.bias = nn.Parameter(torch.zeros(dim))
+    def forward(self, z):
+        norm = torch.abs(z) + CONFIG["eps"]
+        scale = F.relu(norm + self.bias) / norm
+        return z * scale
+
+class ComplexLinear(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.fc_real = nn.Linear(dim, dim, bias=False)
+        self.fc_imag = nn.Linear(dim, dim, bias=False)
+        nn.init.orthogonal_(self.fc_real.weight)
+        nn.init.orthogonal_(self.fc_imag.weight)
+    def forward(self, z):
+        return torch.complex(
+            self.fc_real(z.real) - self.fc_imag(z.imag),
+            self.fc_real(z.imag) + self.fc_imag(z.real)
+        )
+
+class ComplexAttention(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.q_proj = ComplexLinear(dim)
+        self.k_proj = ComplexLinear(dim)
+        self.v_proj = ComplexLinear(dim)
+        self.scale = dim ** -0.5
+    
+    def forward(self, z):
+        q = self.q_proj(z)
+        k = self.k_proj(z)
+        v = self.v_proj(z)
+        q_flat = torch.cat([q.real, q.imag], dim=-1)
+        k_flat = torch.cat([k.real, k.imag], dim=-1)
+        
+        attn_scores = torch.matmul(q_flat, k_flat.transpose(-2, -1)) * self.scale
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        
+        v_real = torch.matmul(attn_weights, v.real)
+        v_imag = torch.matmul(attn_weights, v.imag)
+        return torch.complex(v_real, v_imag)
+
+class SigmoidGatingMask(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.mask = nn.Parameter(torch.ones(dim)) 
+    def forward(self, z):
+        filter_val = torch.sigmoid(self.mask)
+        real = z.real * filter_val
+        imag = z.imag * filter_val
+        return torch.complex(real, imag), filter_val
+
+# [v40.5 Feature] Insight Operator
+class InsightOperator(nn.Module):
+    def __init__(self, dim, compression_ratio=4):
+        super().__init__()
+        self.dim = dim
+        self.project = nn.Linear(dim*2, dim // compression_ratio, bias=False)
+        self.expand = nn.Linear(dim // compression_ratio, dim*2, bias=False)
+
+    def forward(self, z):
+        # Basis Rotation / Subspace Collapse
+        flat = torch.cat([z.real, z.imag], dim=-1)
+        compressed = self.project(flat)
+        expanded = self.expand(compressed)
+        # Qualitative state change
+        return torch.complex(expanded[..., :self.dim], expanded[..., self.dim:])
+
+# ==========================================
+# 4. Recurrent Controllers & Gates (v40.4 Naming)
+# ==========================================
+class RecurrentController(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.gru = nn.GRUCell(dim * 2, dim) 
+        self.bias_proj = nn.Linear(dim, CONFIG["n_modules"])
+        self.value_head = nn.Linear(dim, 4) 
+        
+    def forward(self, broadcast_state, prev_context):
+        flat = torch.cat([broadcast_state.real, broadcast_state.imag], dim=-1)
+        if prev_context is None:
+            prev_context = torch.zeros(flat.size(0), self.gru.hidden_size, device=flat.device)
+            
+        new_context = self.gru(flat, prev_context)
+        module_bias = self.bias_proj(new_context)
+        dynamic_values = torch.sigmoid(self.value_head(new_context))
+        
+        return module_bias, dynamic_values, new_context
+
+class RecurrentRegularizer(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.gru = nn.GRUCell(dim * 2, dim)
+        self.net = ComplexLinear(dim)
+        self.norm = ComplexLayerNorm(dim)
+        
+    def forward(self, broadcast_state, prev_state):
+        flat = torch.cat([broadcast_state.real, broadcast_state.imag], dim=-1)
+        if prev_state is None:
+            prev_state = torch.zeros(flat.size(0), self.gru.hidden_size, device=flat.device)
+            
+        new_state = self.gru(flat, prev_state)
+        z_ctx = torch.complex(new_state, torch.zeros_like(new_state))
+        z = self.norm(self.net(broadcast_state + z_ctx))
+        # [v37 Logic Conserved]: Rotational dialectic (90 degree phase shift)
+        return torch.complex(-z.imag, z.real), new_state
+
+class LinearPredictor(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.predictor = nn.Linear(dim * 2, dim * 2)
+        
+    def forward(self, broadcast_state):
+        flat = torch.cat([broadcast_state.real, broadcast_state.imag], dim=-1)
+        pred_flat = self.predictor(flat)
+        return torch.complex(pred_flat[..., :flat.shape[-1]//2], pred_flat[..., flat.shape[-1]//2:])
+
+class GatedStateTracker(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.gru = nn.GRUCell(dim * 2, dim)
+        self.decoder = nn.Linear(dim, dim * 2)
+        
+    def forward(self, broadcast_state, error_signal, prev_state):
+        flat = torch.cat([broadcast_state.real, broadcast_state.imag], dim=-1)
+        if prev_state is None:
+            prev_state = torch.zeros(flat.size(0), self.gru.hidden_size, device=flat.device)
+        
+        gate = torch.sigmoid(error_signal)
+        new_state = self.gru(flat, prev_state)
+        # Gated update based on error magnitude
+        integrated_state = (gate * new_state) + ((1.0 - gate) * prev_state)
+        
+        bias_flat = self.decoder(integrated_state)
+        bias_c = torch.complex(bias_flat[..., :flat.shape[-1]//2], bias_flat[..., flat.shape[-1]//2:])
+        
+        return bias_c, integrated_state
+
+class TransitionMonitor(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.ReLU(),
+            nn.Linear(dim, 1),
+            nn.Sigmoid()
+        )
+        
+    def forward(self, current_state, prev_state):
+        if prev_state is None:
+            return torch.tensor(0.0, device=current_state.device)
+        
+        delta = current_state - prev_state
+        score = self.net(delta)
+        return score
+
+# ==========================================
+# 5. Specialized Modules (v40.4 Naming)
+# ==========================================
+
+class ComplexAttentionBlock(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.linear = ComplexLinear(dim)
+        self.norm = ComplexLayerNorm(dim)
+        self.act = ModReLU(dim)
+        self.attn = ComplexAttention(dim)
+        self.gating = SigmoidGatingMask(dim)
+        
+        self.score_head = nn.Linear(dim * 2, 1)
+        self.conf_head = nn.Linear(dim * 2, 1)
+        self.halt_head = nn.Linear(dim * 2, 1)
+        nn.init.constant_(self.halt_head.bias, -4.0)
+
+    def forward(self, raw_input, broadcast_state):
+        combined = 0.5 * raw_input + 0.5 * broadcast_state
+        
+        z = self.norm(self.linear(combined))
+        z = self.act(z)
+        z_attn = self.attn(z)
+        proposal, mask_val = self.gating(z_attn)
+        
+        flat = torch.cat([proposal.real, proposal.imag], dim=-1)
+        score = self.score_head(flat)
+        confidence = torch.sigmoid(self.conf_head(flat))
+        halt_logit = self.halt_head(flat)
+        
+        return proposal, score, confidence, halt_logit, mask_val
+
+class DifferentiableStack(nn.Module):
+    def __init__(self, dim, size):
+        super().__init__()
+        self.dim = dim
+        self.size = size
+        self.ctrl_net = nn.Linear(dim * 2, 3)
+        self.score_head = nn.Linear(dim * 2, 1)
+        self.conf_head = nn.Linear(dim * 2, 1)
+        
+    def forward(self, broadcast_state, memory, ptr):
+        flat_in = torch.cat([broadcast_state.real, broadcast_state.imag], dim=-1)
+        control = F.softmax(self.ctrl_net(flat_in), dim=-1)
+        push, pop, noop = control[:, 0].view(-1,1), control[:, 1].view(-1,1), control[:, 2].view(-1,1)
+        
+        ptr_up = torch.roll(ptr, 1, dims=1)
+        ptr_down = torch.roll(ptr, -1, dims=1)
+        new_ptr = (push * ptr_up) + (pop * ptr_down) + (noop * ptr)
+        new_ptr = new_ptr / (new_ptr.sum(dim=1, keepdim=True) + CONFIG["eps"])
+        
+        write_mask = push * ptr_up
+        write_val = write_mask.unsqueeze(2) * flat_in.unsqueeze(1)
+        retain_mask = 1.0 - write_mask.unsqueeze(2)
+        new_memory = write_val + (memory * retain_mask)
+        
+        read_mask = new_ptr.unsqueeze(2)
+        read_flat = torch.sum(new_memory * read_mask, dim=1)
+        proposal = torch.complex(read_flat[:, :self.dim], read_flat[:, self.dim:])
+        
+        score = self.score_head(read_flat)
+        confidence = torch.sigmoid(self.conf_head(read_flat))
+        
+        return proposal, score, confidence, new_memory, new_ptr
+
+class GraphVectorQuantizer(nn.Module):
+    def __init__(self, latent_dim, n_symbols):
+        super().__init__()
+        self.codebook = nn.Parameter(torch.empty(n_symbols, latent_dim*2))
+        nn.init.uniform_(self.codebook, -0.5, 0.5)
+        
+        # Topology
+        self.adjacency = nn.Parameter(torch.zeros(n_symbols, n_symbols))
+        self.register_buffer("edge_usage", torch.zeros(n_symbols, n_symbols))
+        
+        # [v40.4 Feature] Lifespan Tracking for Neurogenesis
+        self.register_buffer("symbol_usage", torch.ones(n_symbols)) 
+        self.dead_limit = 0.1 
+        
+        self.score_head = nn.Linear(latent_dim * 2, 1)
+        self.conf_head = nn.Linear(latent_dim * 2, 1)
+
+    def iterative_attractor_refinement(self, z, steps):
+        """ [v40.4 Feature] Iterative energy minimization """
+        z_clean = z.clone()
+        beta = CONFIG["inverse_temperature"]
+        for _ in range(steps):
+            energy = torch.matmul(z_clean, self.codebook.t())
+            attn = F.softmax(energy * beta, dim=-1)
+            z_clean = torch.matmul(attn, self.codebook)
+        return z_clean
+
+    def clean_memory(self, z, steps=CONFIG["hopfield_steps"]):
+        """ [v40.1 Feature] Hopfield Dynamics (Alternative Cleaning) """
+        z_clean = z.clone()
+        beta = CONFIG["hopfield_beta"]
+        for _ in range(steps):
+            energy = torch.matmul(z_clean, self.codebook.t())
+            attn = F.softmax(energy * beta, dim=-1)
+            z_clean = torch.matmul(attn, self.codebook)
+        return z_clean
+
+    def restructure(self, active_indices, strength=0.1):
+        """ [v40.5 Feature] Topology Surgery / Graph Plasticity """
+        with torch.no_grad():
+            if len(active_indices) > 1:
+                for i in active_indices:
+                    for j in active_indices:
+                        if i != j:
+                            self.adjacency[i, j] += strength
+                            self.adjacency[j, i] += strength
+            self.adjacency.data = torch.tanh(self.adjacency.data)
+
+    def revive_dead_entries(self, z_flat_batch):
+        """ [v40.4 Feature] Neurogenesis """
+        dead_mask = self.symbol_usage < self.dead_limit
+        if not dead_mask.any():
+            return
+            
+        dead_indices = torch.nonzero(dead_mask).squeeze(1)
+        
+        with torch.no_grad():
+            rand_indices = torch.randperm(z_flat_batch.size(0))[:len(dead_indices)]
+            rand_inputs = z_flat_batch[rand_indices]
+            
+            if rand_inputs.size(0) < len(dead_indices):
+                diff = len(dead_indices) - rand_inputs.size(0)
+                noise = torch.randn(diff, self.codebook.size(1), device=self.codebook.device) * 0.1
+                replacements = torch.cat([rand_inputs, noise], dim=0)
+            else:
+                replacements = rand_inputs
+
+            self.codebook.data[dead_indices] = replacements
+            self.symbol_usage[dead_indices] = 1.0 
+            self.adjacency.data[dead_indices, :] = 0.0
+            self.adjacency.data[:, dead_indices] = 0.0
+
+    def forward(self, broadcast_state, prev_symbol_idx=None, scale_factor=1.0, noise_offset=None):
+        z_flat = torch.cat([broadcast_state.real, broadcast_state.imag], dim=-1)
+        
+        if noise_offset is not None:
+            z_flat = z_flat + noise_offset
+        
+        d = torch.sum(z_flat**2, dim=-1, keepdim=True) + \
+            torch.sum(self.codebook**2, dim=-1) - \
+            2 * torch.matmul(z_flat, self.codebook.t())
+            
+        if prev_symbol_idx is not None:
+            graph_prior = self.adjacency[prev_symbol_idx]
+            raw_bias = (CONFIG["prior_bias_scale"] / scale_factor) * torch.sigmoid(graph_prior)
+            bias = torch.clamp(raw_bias, max=0.5)
+            d = d - bias
+
+        min_indices = torch.argmin(d, dim=-1)
+        z_q = F.embedding(min_indices, self.codebook)
+        
+        if self.training:
+            with torch.no_grad():
+                self.symbol_usage *= 0.999 
+                curr_usage = torch.bincount(min_indices, minlength=self.codebook.size(0)).float()
+                self.symbol_usage += (curr_usage * 0.1) 
+                
+                if prev_symbol_idx is not None:
+                    self.edge_usage *= 0.99 
+                    for b in range(min_indices.size(0)):
+                        p = prev_symbol_idx[b].item()
+                        c = min_indices[b].item()
+                        self.edge_usage[p, c] += 1.0
+
+                self.revive_dead_entries(z_flat.detach())
+
+        loss_vq = F.mse_loss(z_q, z_flat.detach())
+        loss_commit = F.mse_loss(z_q.detach(), z_flat)
+        
+        z_q = z_flat + (z_q - z_flat).detach()
+        proposal = torch.complex(z_q[..., :z_flat.shape[-1]//2], z_q[..., z_flat.shape[-1]//2:])
+        
+        dist_score = -torch.min(d, dim=-1, keepdim=True)[0]
+        score = self.score_head(z_q) + (0.1 * dist_score)
+        confidence = torch.sigmoid(self.conf_head(z_q))
+        
+        total_loss = loss_vq + loss_commit * CONFIG["commitment_cost"]
+        return proposal, score, confidence, total_loss, min_indices
+
+class RandomNoiseEmbedding(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+        self.perspective_emb = nn.Embedding(CONFIG["n_perspective_embs"], dim)
+        self.audio_emb = nn.Embedding(CONFIG["n_audio_embs"], dim)
+        self.chem_emb_1 = nn.Embedding(CONFIG["n_chem_embs"], dim*2)
+        self.chem_emb_2 = nn.Embedding(CONFIG["n_chem_embs"], dim*2)
+        self.score_head = nn.Linear(dim * 2, 1)
+        self.conf_head = nn.Linear(dim * 2, 1)
+        
+    def forward(self, batch_size, device):
+        p_idx = torch.randint(0, CONFIG["n_perspective_embs"], (batch_size,), device=device)
+        p_emb = self.perspective_emb(p_idx)
+        a_idx = torch.randint(0, CONFIG["n_audio_embs"], (batch_size,), device=device)
+        a_emb = self.audio_emb(a_idx)
+        c1_idx = torch.randint(0, CONFIG["n_chem_embs"], (batch_size,), device=device)
+        c2_idx = torch.randint(0, CONFIG["n_chem_embs"], (batch_size,), device=device)
+        
+        noise_vec = self.chem_emb_1(c1_idx) + self.chem_emb_2(c2_idx)
+        noise_real = noise_vec[:, :self.dim]
+        noise_imag = noise_vec[:, self.dim:]
+        
+        combined_real = p_emb + noise_real
+        combined_imag = a_emb + noise_imag
+        proposal = torch.complex(combined_real, combined_imag)
+        
+        rand_val = torch.randn(batch_size, 1, device=device)
+        flat = torch.cat([combined_real, combined_imag], dim=-1)
+        score = self.score_head(flat) + rand_val
+        confidence = torch.sigmoid(self.conf_head(flat))
+        
+        return proposal, score, confidence, noise_vec
+
+# ==========================================
+# 6. Master Model (Hybrid with v40.4 Naming)
+# ==========================================
+class ComplexRecurrentModel(nn.Module):
+    def __init__(self, vocab_size, dim):
+        super().__init__()
+        self.dim = dim
+        self.emb_mag = nn.Embedding(vocab_size, dim)
+        self.emb_phase = nn.Parameter(torch.randn(vocab_size, dim))
+        
+        self.controller = RecurrentController(dim)
+        self.regularizer = RecurrentRegularizer(dim)
+        self.predictor = LinearPredictor(dim)
+        self.state_tracker = GatedStateTracker(dim)
+        self.transition_monitor = TransitionMonitor(dim)
+        self.insight_op = InsightOperator(dim) # [v40.5 Feature]
+        
+        self.attn_block = ComplexAttentionBlock(dim)
+        self.stack = DifferentiableStack(dim, CONFIG["stack_size"])
+        self.vq_module = GraphVectorQuantizer(dim, CONFIG["n_symbols"])
+        self.noise_module = RandomNoiseEmbedding(dim)
+        
+        self.decoder = nn.Linear(dim*2, vocab_size)
+        
+        self.register_buffer("prev_sym_soft", torch.zeros(CONFIG["n_symbols"]))
+        self.register_buffer("long_term_values", torch.ones(4) * 0.5) 
+        self.register_buffer("regularizer_trust", torch.tensor(0.5))
+
+    def embed(self, idx):
+        r = self.emb_mag(idx)
+        t = self.emb_phase[idx]
+        return torch.complex(r*torch.cos(t), r*torch.sin(t))
+
+    def forward(self, input_ids, hidden=None, prev_sym=None, competition_scale=1.0, epoch=0):
+        batch_size = input_ids.size(0)
+        z_in = self.embed(input_ids).squeeze(1)
+        
+        if hidden is None:
+            broadcast_state = torch.zeros_like(z_in)
+            ctrl_ctx = None
+            reg_state = None
+            tracker_state = None
+            stack_mem = torch.zeros(batch_size, CONFIG["stack_size"], self.dim*2, device=z_in.device)
+            stack_ptr = torch.zeros(batch_size, CONFIG["stack_size"], device=z_in.device)
+            stack_ptr[:, 0] = 1.0
+        else:
+            broadcast_state, ctrl_ctx, reg_state, tracker_state, stack_mem, stack_ptr = hidden
+
+        act_penalty = 0
+        vq_loss_total = 0
+        consistency_loss_total = 0
+        sparse_reg_accum = 0
+        error_accum = torch.zeros((), device=z_in.device)
+        uncertainty_accum = 0
+        entropy_loss_accum = 0 
+        transition_diff_accum = 0 
+        courage_accum = 0 # [v40.1 Feature]
+        
+        meta_value_accum = torch.zeros(4, device=z_in.device) 
+        
+        halting_probability = torch.zeros(batch_size, 1).to(z_in.device)
+        remain = torch.ones(batch_size, 1).to(z_in.device)
+        
+        module_wins = torch.zeros(CONFIG["n_modules"], device=z_in.device)
+        stack_depth_sum = torch.tensor(0.0, device=z_in.device)
+        
+        broadcast_weighted = torch.zeros_like(broadcast_state)
+        
+        prev_tracker_step = tracker_state
+        insight_triggered_count = 0
+        
+        for t in range(CONFIG["max_steps"]):
+            
+            # 0. Predictive Coding
+            expected_state = self.predictor(broadcast_state)
+            
+            # Add positional encoding signal
+            temp_val = torch.tensor(0.1 * (t+1), device=z_in.device).view(1,1)
+            temp_emb = temp_val.repeat(batch_size, self.dim)
+            broadcast_state = broadcast_state + torch.complex(temp_emb, torch.zeros_like(temp_emb))
+            
+            # 1. Controller
+            mod_bias, dynamic_values, ctrl_ctx = self.controller(broadcast_state, ctrl_ctx)
+            meta_value_accum += dynamic_values.mean(dim=0)
+            
+            # State Tracking & Transition Monitoring
+            current_error = error_accum.view(1, 1).expand(batch_size, 1)
+            inst_error = torch.norm(torch.cat([expected_state.real, expected_state.imag], dim=-1), dim=-1, keepdim=True)
+            tracker_bias, tracker_state = self.state_tracker(broadcast_state, inst_error, tracker_state)
+            
+            trans_score = self.transition_monitor(tracker_state, prev_tracker_step)
+            transition_diff_accum = transition_diff_accum + trans_score.mean()
+            prev_tracker_step = tracker_state
+            
+            # =========================================================
+            # [v40.5 Feature] INSIGHT TRIGGER
+            # If high error AND high flux => Restructure Reality
+            # =========================================================
+            avg_err = inst_error.mean()
+            avg_flux = trans_score.mean()
+            
+            if avg_err > CONFIG["insight_error_threshold"] and avg_flux > CONFIG["insight_flux_threshold"]:
+                # 1. Basis Rotation (Causal Operator - v40.5)
+                broadcast_state = self.insight_op(broadcast_state)
+                
+                # 2. Attractor Surgery (Graph Plasticity - v40.5)
+                if self.training and prev_sym is not None:
+                     self.vq_module.restructure(prev_sym.unique(), strength=CONFIG["restructure_strength"])
+                
+                insight_triggered_count += 1
+            
+            broadcast_state = broadcast_state + tracker_bias
+            
+            # 2. Adaptive Scale Factor
+            if t == 0: base_p = CONFIG["plasticity_base"]
+            else: base_p = CONFIG["plasticity_base"] + (error_accum / t) * CONFIG["plasticity_scale"]
+            
+            scale_factor = base_p * (1.0 - (CONFIG["transition_diff_weight"] * trans_score.mean().item()))
+            scale_factor = max(0.1, min(scale_factor, 5.0))
+            
+            # 3. Module Processing
+            proc_prop, proc_score, proc_conf, proc_halt, mask_val = self.attn_block(z_in, broadcast_state)
+            sparse_reg_accum += torch.sum(mask_val**2)
+            
+            stack_prop, stack_score, stack_conf, stack_mem, stack_ptr = self.stack(broadcast_state, stack_mem, stack_ptr)
+            curr_depth = torch.sum(stack_ptr * torch.arange(CONFIG["stack_size"], device=z_in.device), dim=1)
+            stack_depth_sum = stack_depth_sum + curr_depth.mean()
+            
+            sens_prop, sens_score, sens_conf, sens_vec = self.noise_module(batch_size, z_in.device)
+            sem_prop, sem_score, sem_conf, vq_loss, sym_idx = self.vq_module(broadcast_state, prev_sym, scale_factor, noise_offset=sens_vec)
+            
+            # 4. Competition & Selection
+            proposals = torch.stack([proc_prop, stack_prop, sem_prop, sens_prop], dim=1) 
+            raw_scores = torch.cat([proc_score, stack_score, sem_score, sens_score], dim=1) 
+            confidences = torch.cat([proc_conf, stack_conf, sem_conf, sens_conf], dim=1)
+            
+            effective_score = raw_scores + (mod_bias * competition_scale)
+            access_weights = F.softmax(effective_score / CONFIG["temperature"], dim=-1)
+            
+            winner_vals, winner_idx = torch.max(access_weights, dim=1)
+            for w in winner_idx: module_wins[w] += 1
+            
+            masked_weights = access_weights.clone()
+            masked_weights.scatter_(1, winner_idx.unsqueeze(1), -1e9)
+            soft_weights = F.softmax(masked_weights, dim=-1) 
+            
+            weights_soft_c = torch.complex(soft_weights.unsqueeze(-1), torch.zeros_like(soft_weights.unsqueeze(-1)))
+            soft_vec = torch.sum(proposals * weights_soft_c, dim=1)
+            
+            weights_c = torch.complex(access_weights.unsqueeze(-1), torch.zeros_like(access_weights.unsqueeze(-1)))
+            winner_vec = torch.sum(proposals * weights_c, dim=1)
+            
+            reg_vec, reg_state = self.regularizer(winner_vec, reg_state)
+            
+            reg_weight = self.regularizer_trust.item() * CONFIG["regularizer_weight"]
+            
+            # [v37 Logic] Shadow Influence
+            shadow_vec = torch.sum(proposals * torch.complex(soft_weights.unsqueeze(-1), torch.zeros_like(soft_weights.unsqueeze(-1))), dim=1)
+            
+            # State Integration (Hybrid of v37/v40)
+            state_next = winner_vec + \
+                      (CONFIG["soft_attention_weight"] * soft_vec) + \
+                      (CONFIG["shadow_weight"] * shadow_vec) + \
+                      (reg_weight * reg_vec)
+            
+            # Attractor Dynamics (Refinement)
+            state_next_flat = torch.cat([state_next.real, state_next.imag], dim=-1)
+            
+            if self.training:
+                # [v40.4 Feature] Iterative Attractor Refinement
+                steps = max(0, CONFIG["refinement_steps"] - int(epoch / 300))
+                if steps > 0:
+                    state_clean_flat = self.vq_module.iterative_attractor_refinement(state_next_flat, steps=steps)
+                else:
+                    state_clean_flat = state_next_flat
+            else:
+                state_clean_flat = state_next_flat
+                
+            state_next = torch.complex(state_clean_flat[..., :self.dim], state_clean_flat[..., self.dim:])
+            
+            # 5. Loss Calculation
+            current_diff = torch.norm(torch.cat([state_next.real, state_next.imag], dim=-1) - \
+                                  torch.cat([expected_state.real, expected_state.imag], dim=-1), dim=-1)
+            
+            error_accum = error_accum + current_diff.mean()
+            uncertainty_accum = uncertainty_accum + torch.mean(1.0 - confidences)
+            
+            # [v40.1 Feature] Trust Dynamics
+            step_trust = 1.0 / (1.0 + current_diff.mean().item())
+            with torch.no_grad():
+                self.regularizer_trust = (CONFIG["trust_momentum"] * self.regularizer_trust) + \
+                                    ((1.0 - CONFIG["trust_momentum"]) * step_trust)
+            
+            # [v40.1 Feature] Courage
+            courage = uncertainty_accum * torch.tanh(1.0 / (error_accum + CONFIG["eps"]))
+            courage_accum = courage_accum + courage
+            
+            entropy_penalty = uncertainty_accum * torch.tanh(1.0 / (error_accum + CONFIG["eps"]))
+            entropy_loss_accum = entropy_loss_accum + entropy_penalty
+            
+            max_score = torch.max(effective_score, dim=1, keepdim=True)[0]
+            activation_gate = torch.sigmoid((max_score - 0.0) * 5.0) 
+            broadcast_state = (torch.tanh(state_next.real) + 1j * torch.tanh(state_next.imag)) * activation_gate
+            
+            # 6. Adaptive Computation Time (ACT)
+            p_halt = torch.sigmoid(proc_halt)
+            still_running = (halting_probability < CONFIG["halt_threshold"]).float()
+            p = p_halt * still_running
+            if t == CONFIG["max_steps"] - 1: p = remain
+            
+            p_complex = torch.complex(p, torch.zeros_like(p))
+            broadcast_weighted = broadcast_weighted + (p_complex * broadcast_state)
+            
+            halting_probability = halting_probability + p
+            remain = remain - p
+            act_penalty += still_running.mean()
+            vq_loss_total = vq_loss_total + vq_loss
+            
+            if prev_sym is not None:
+                row_logits = self.vq_module.adjacency[prev_sym]
+                cons_loss = F.cross_entropy(row_logits.view(-1, CONFIG["n_symbols"]), sym_idx.view(-1))
+                consistency_loss_total += cons_loss
+                
+            prev_sym = sym_idx
+
+        avg_meta_values = meta_value_accum / CONFIG["max_steps"]
+        with torch.no_grad():
+            self.long_term_values = (CONFIG["momentum"] * self.long_term_values) + \
+                                    ((1.0 - CONFIG["momentum"]) * avg_meta_values.detach())
+
+        features = torch.cat([broadcast_weighted.real, broadcast_weighted.imag], dim=-1)
+        logits = self.decoder(features)
+        
+        next_hidden = (broadcast_weighted, ctrl_ctx, reg_state, tracker_state, stack_mem, stack_ptr)
+        avg_stack_depth = stack_depth_sum / CONFIG["max_steps"]
+        
+        return logits, next_hidden, prev_sym, act_penalty, vq_loss_total, consistency_loss_total, module_wins, sparse_reg_accum, avg_stack_depth, error_accum, uncertainty_accum, avg_meta_values, entropy_loss_accum, transition_diff_accum, self.regularizer_trust, insight_triggered_count, courage_accum
+
+# ==========================================
+# 7. Training Engine
+# ==========================================
+def train():
+    model = ComplexRecurrentModel(vocab_size, CONFIG["embedding_dim"]).to(DEVICE)
+    opt = torch.optim.AdamW(model.parameters(), lr=CONFIG["learning_rate"], weight_decay=1e-5)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=CONFIG["epochs"], eta_min=1e-5)
+    
+    print(f"--- Training SACRSN Hybrid (Refactored Omega) ---")
+    print(f"Initial LR: {CONFIG['learning_rate']}") 
+    
+    try:
+        for epoch in range(CONFIG["epochs"]):
+            hidden = None
+            prev_sym = None
+            total_loss = 0
+            total_act = 0
+            total_ppx = 0
+            total_error = 0
+            total_depth = 0
+            total_insights = 0
+            
+            comp_scale = 0.5 if epoch < 300 else 1.0
+            
+            # Pruning & Decay
+            with torch.no_grad():
+                model.vq_module.adjacency.data *= (1.0 - CONFIG["synaptic_decay"])
+                
+                usage_norm = model.vq_module.edge_usage / (model.vq_module.edge_usage.max() + 1e-6)
+                metric = torch.abs(model.vq_module.adjacency.data) + (0.5 * usage_norm)
+                mask = metric > CONFIG["pruning_threshold"]
+                model.vq_module.adjacency.data *= mask.float()
+            
+            entropy_weight = 0.01 * (1 - epoch / CONFIG["epochs"])
+            
+            for i in range(len(data_tensor) - 1):
+                x = data_tensor[i].view(1, 1)
+                y = data_tensor[i+1].view(1)
+                
+                logits, hidden, sym_idx, act_pen, vq_loss, cons_loss, _, sparse_reg, step_depth, error, uncertainty, meta_vals, entropy_pen, trans_diff, trust, insights_count, courage = model(x, hidden, prev_sym, competition_scale=comp_scale, epoch=epoch)
+                
+                gw, exc, crit, narr, smem, sptr = hidden
+                hidden = (gw.detach(), exc.detach(), crit.detach(), narr.detach(), smem.detach(), sptr.detach())
+                prev_sym = sym_idx.detach()
+                
+                loss_pred = F.cross_entropy(logits, y)
+                loss_act = CONFIG["step_penalty"] * act_pen
+                
+                probs = F.softmax(logits, dim=-1)
+                loss_entropy = -entropy_weight * (-(probs * torch.log(probs + 1e-8)).sum())
+                
+                curr_onehot = F.one_hot(sym_idx, CONFIG["n_symbols"]).float()
+                if curr_onehot.dim() > 1: curr_onehot = curr_onehot.view(-1)
+                
+                with torch.no_grad():
+                    model.prev_sym_soft.copy_(model.prev_sym_soft * 0.9 + curr_onehot * 0.1)
+                
+                buffer_usage = model.prev_sym_soft
+                loss_diversity = CONFIG["diversity_loss_weight"] * (buffer_usage * torch.log(buffer_usage + 1e-9)).sum()
+                
+                w_cons, w_div, w_err, w_unc = meta_vals[0], meta_vals[1], meta_vals[2], meta_vals[3]
+                
+                loss_cons_dyn = (CONFIG["consistency_loss_weight"] * 2.0 * w_cons) * cons_loss
+                loss_div_dyn = (w_div) * loss_diversity 
+                loss_err_dyn = (CONFIG["prediction_error_weight"] * 2.0 * w_err) * error
+                loss_unc_dyn = (CONFIG["uncertainty_loss_weight"] * 2.0 * w_unc) * uncertainty
+                
+                # Conserving ALL distinct loss components from v37/v40
+                loss_ent_pen = -CONFIG["entropy_weight"] * entropy_pen # v40.4
+                loss_sparse = CONFIG["sparse_reg_weight"] * sparse_reg 
+                loss_trans = -0.01 * trans_diff # v40.5
+                loss_courage = -CONFIG["courage_weight"] * courage # v40.1
+                
+                vq_weight = min(0.1, epoch / 200.0)
+                
+                loss = loss_pred + loss_act + (vq_weight * vq_loss) + loss_entropy + loss_div_dyn + loss_cons_dyn + loss_sparse + loss_err_dyn + loss_unc_dyn + loss_ent_pen + loss_trans + loss_courage
+                
+                opt.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), CONFIG["grad_clip"])
+                opt.step()
+                
+                total_loss += loss.item()
+                total_act += act_pen.item()
+                total_error += error.item()
+                total_depth += step_depth.item()
+                total_insights += insights_count
+                
+                usage_dist = model.prev_sym_soft.detach() + 1e-10
+                entropy_val = -(usage_dist * torch.log(usage_dist)).sum()
+                total_ppx += torch.exp(entropy_val).item()
+                
+            scheduler.step()
+
+            if epoch % 1 == 0:
+                avg_loss = total_loss / len(data_tensor)
+                avg_act = total_act / len(data_tensor)
+                avg_ppx = total_ppx / len(data_tensor) 
+                avg_err = total_error / len(data_tensor)
+                avg_depth = total_depth / len(data_tensor)
+                lr = scheduler.get_last_lr()[0]
+                # Log format follows v40.4 style but includes new metrics
+                print(f"Ep {epoch:04d} | Loss: {avg_loss:.4f} | ACT: {avg_act:.2f} | Depth: {avg_depth:.2f} | Err: {avg_err:.3f} | Insights: {total_insights} | Trust: {trust:.3f} | LR: {lr:.6f}")
+                
+                if avg_loss < 0.0001:
+                    print("\n--- CONVERGENCE REACHED ---")
+                    return model
+
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+    
+    return model
+
+# ==========================================
+# 8. Visualization & Interaction Suite
+# ==========================================
+def visualize_all(model):
+    print("\n--- Generating Diagnostics & Images ---")
+    model.eval()
+    
+    symbol_to_word = defaultdict(list)
+    hidden, prev_sym = None, None
+    with torch.no_grad():
+        for i in range(len(data_tensor) - 1):
+            x = data_tensor[i].view(1, 1)
+            _, hidden, prev_sym, _, _, _, _, _, _, _, _, _, _, _, _, _, _ = model(x, hidden, prev_sym)
+            current_word = tokenizer.decode([data_tensor[i].item()])
+            symbol_to_word[prev_sym.item()].append(current_word)
+
+    adj_probs = torch.sigmoid(model.vq_module.adjacency).detach().cpu().numpy()
+    G = nx.DiGraph()
+    for i in range(CONFIG["n_symbols"]): G.add_node(i)
+    edges, weights = [], []
+    for i in range(CONFIG["n_symbols"]):
+        for j in range(CONFIG["n_symbols"]):
+            w = adj_probs[i, j]
+            if w > 0.05: 
+                G.add_edge(i, j, weight=w)
+                edges.append((i, j))
+                weights.append(w)
+    
+    plt.figure(figsize=(14, 14))
+    try: pos = nx.spring_layout(G, k=0.15, iterations=50, seed=42)
+    except: pos = nx.circular_layout(G)
+    
+    node_colors = ['#a0cbe2' if i in symbol_to_word else '#ffe5e5' for i in G.nodes()]
+    
+    nx.draw_networkx_nodes(G, pos, node_size=500, alpha=0.8, node_color=node_colors)
+    nx.draw_networkx_edges(G, pos, width=[w*2 for w in weights], alpha=0.5, edge_color='gray', arrowstyle='->', arrowsize=10)
+    labels = {}
+    for i in G.nodes():
+        if i in symbol_to_word:
+            w = max(set(symbol_to_word[i]), key=symbol_to_word[i].count)
+            labels[i] = w[:8]
+    nx.draw_networkx_labels(G, pos, labels=labels, font_size=8)
+    
+    plt.title(f"1_graph_topology (Active: {len(symbol_to_word)})")
+    plt.savefig("1_graph_topology.png")
+    plt.close()
+
+    # 2. Inference Scan
+    print("Running Inference Scan...")
+    hidden, prev_sym = None, None
+    start_token_id = data_tensor[0].view(1, 1)
+    x = start_token_id
+    gen_text = tokenizer.decode([x.item()])
+    
+    mod_history = [] 
+    phase_reals, phase_imags = [], []
+    stack_history = [] 
+    act_history = []
+    error_history = []
+    meta_history = []
+    trans_history = []
+    
+    for _ in range(50):
+        with torch.no_grad():
+            logits, hidden, prev_sym, act_pen, _, _, wins, _, avg_depth, error, _, meta_vals, _, trans_diff, _, _, _ = model(x, hidden, prev_sym)
+            
+            mod_history.append(wins.cpu().numpy())
+            stack_history.append(avg_depth.item())
+            act_history.append(1.0 + act_pen.item())
+            error_history.append(error.item())
+            meta_history.append(meta_vals.cpu().numpy())
+            trans_history.append(trans_diff.item())
+            
+            z = hidden[0].cpu().squeeze()
+            if z.dim() > 0: 
+                phase_reals.append(z.real[0].item())
+                phase_imags.append(z.imag[0].item())
+            else:
+                phase_reals.append(z.real.item())
+                phase_imags.append(z.imag.item())
+            
+            probs = F.softmax(logits, dim=-1)
+            next_ix = torch.multinomial(probs, 1)
+            gen_text += tokenizer.decode([next_ix.item()])
+            x = next_ix
+
+    print(f"Generated: {gen_text}\n")
+    
+    plt.figure(figsize=(12, 6))
+    mod_history = np.array(mod_history)
+    plt.plot(mod_history[:, 0], label='ComplexAttentionBlock', marker='o')
+    plt.plot(mod_history[:, 1], label='Stack', marker='s')
+    plt.plot(mod_history[:, 2], label='VQ', marker='^')
+    plt.plot(mod_history[:, 3], label='Noise', marker='x', linestyle='--')
+    plt.title("2_module_competition")
+    plt.legend()
+    plt.savefig("2_module_competition.png")
+    plt.close()
+
+    plt.figure(figsize=(12, 4))
+    plt.plot(stack_history, color='purple', label='Avg Stack Depth')
+    plt.fill_between(range(len(stack_history)), stack_history, color='purple', alpha=0.1)
+    plt.title("3_stack_depth")
+    plt.savefig("3_stack_depth.png")
+    plt.close()
+
+    plt.figure(figsize=(12, 4))
+    plt.bar(range(len(act_history)), act_history, color='orange')
+    plt.title("4_act_profile")
+    plt.savefig("4_act_profile.png")
+    plt.close()
+
+    plt.figure(figsize=(12, 4))
+    plt.plot(error_history, color='crimson', label='Prediction Error')
+    plt.fill_between(range(len(error_history)), error_history, color='crimson', alpha=0.1)
+    plt.title("5_error_signal")
+    plt.savefig("5_error_signal.png")
+    plt.close()
+
+    plt.figure(figsize=(8, 8))
+    plt.scatter(phase_reals, phase_imags, c=range(len(phase_reals)), cmap='plasma', alpha=0.5)
+    plt.colorbar(label="Time")
+    plt.title("6_phase_plot")
+    plt.axis('equal')
+    plt.savefig("6_phase_plot.png")
+    plt.close()
+    
+    plt.figure(figsize=(12, 6))
+    meta_history = np.array(meta_history)
+    plt.plot(meta_history[:, 0], label='Consistency')
+    plt.plot(meta_history[:, 1], label='Diversity')
+    plt.plot(meta_history[:, 2], label='Error')
+    plt.plot(meta_history[:, 3], label='Uncertainty')
+    plt.title("7_loss_weights")
+    plt.legend()
+    plt.savefig("7_loss_weights.png")
+    plt.close()
+    
+    plt.figure(figsize=(12, 4))
+    plt.plot(trans_history, color='gold', label='Transition Diff')
+    plt.fill_between(range(len(trans_history)), trans_history, color='gold', alpha=0.2)
+    plt.title("8_transition_magnitude")
+    plt.savefig("8_transition_magnitude.png")
+    plt.close()
+
+def generative_sampling(model):
+    print("\n--- 🌙 Generative Sampling (Graph Walk) ---")
+    adj = torch.sigmoid(model.vq_module.adjacency).detach().cpu().numpy()
+    model.eval()
+    
+    start_token_id = data_tensor[0].view(1, 1)
+    x = start_token_id
+    _, hidden, prev_sym, _, _, _, _, _, _, _, _, _, _, _, _, _, _ = model(x, None, None)
+    
+    curr_sym = prev_sym.item()
+    output = "Start -> "
+    
+    max_prob = np.max(adj)
+    dynamic_threshold = min(0.2, max_prob * 0.5) if max_prob > 0 else 0.0
+    
+    for _ in range(30):
+        probs = adj[curr_sym]
+        probs[probs < dynamic_threshold] = 0 
+        if probs.sum() == 0: break
+        probs = probs / probs.sum()
+        next_sym = np.random.choice(len(probs), p=probs)
+        
+        z_flat = model.vq_module.codebook[next_sym].unsqueeze(0)
+        logits = model.decoder(z_flat)
+        word_idx = torch.argmax(logits).item()
+        output += tokenizer.decode([word_idx])
+        curr_sym = next_sym
+        
+    print(f"Graph Output: {output}\n")
+
+def ood_detection(model):
+    print("\n--- 🚨 OOD Detection ---")
+    corrupt_text = "The neural architecture of the mind is a banana"
+    input_indices = tokenizer.encode(corrupt_text)
+    input_tensor = input_indices.to(DEVICE)
+    tokens_decoded = [tokenizer.decode([t.item()]) for t in input_indices]
+    
+    hidden, prev_sym = None, None
+    anomalies = []
+    
+    with torch.no_grad():
+        for i in range(len(input_tensor) - 1):
+            x = input_tensor[i].view(1, 1)
+            _, hidden, prev_sym, _, _, cons_loss, _, _, _, _, _, _, _, _, _, _, _ = model(x, hidden, prev_sym)
+            anomalies.append(cons_loss.item())
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(range(len(anomalies)), anomalies, color='skyblue', linestyle='-', linewidth=2, label='Topology Flow')
+    plt.scatter(range(len(anomalies)), anomalies, color='crimson', s=50, zorder=5, label='Anomaly Score')
+    plt.xticks(range(len(anomalies)), tokens_decoded[1:], rotation=45)
+    plt.title("Graph Consistency Score")
+    plt.tight_layout()
+    plt.savefig("9_ood_detection.png")
+    plt.close()
+    print("Saved 9_ood_detection.png")
+
+def extract_logic_rules(model, data_tensor):
+    print("\n--- Extracting Computation Rules ---")
+    model.eval()
+    rule_book = defaultdict(list)
+    hidden, prev_sym = None, None
+    
+    with torch.no_grad():
+        for i in range(len(data_tensor) - 1):
+            x = data_tensor[i].view(1, 1)
+            _, hidden, sym_idx, act_pen, _, _, _, _, _, _, _, _, _, _, _, _, _ = model(x, hidden, prev_sym)
+            if prev_sym is not None:
+                src = prev_sym.item()
+                dst = sym_idx.item()
+                rule_book[(src, dst)].append(act_pen.item())
+            prev_sym = sym_idx
+
+    sorted_rules = sorted(rule_book.items(), key=lambda x: len(x[1]), reverse=True)
+    print(f"\n{'FROM':<6} | {'TO':<6} | {'COUNT':<6} | {'AVG STEPS':<10}")
+    print("-" * 45)
+    for (src, dst), steps in sorted_rules[:15]:
+        if len(steps) > 1:
+            print(f"S_{src:<4} -> S_{dst:<4} | {len(steps):<6} | {sum(steps)/len(steps):.2f}")
+
+# ==========================================
+# 9. Main Execution
+# ==========================================
+if __name__ == "__main__":
+    FILENAME = "sacrsn_hybrid_refactored_omega.pth"
+    
+    trained_model = train()
+    
+    print(f"\n--- Saving Model to {FILENAME} ---")
+    torch.save(trained_model.state_dict(), FILENAME)
+    
+    visualize_all(trained_model)
+    extract_logic_rules(trained_model, data_tensor)
+    generative_sampling(trained_model)
+    ood_detection(trained_model)

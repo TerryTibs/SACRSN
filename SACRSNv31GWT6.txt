@@ -1,0 +1,921 @@
+# ============================================================
+# SACRSN v38.1: THE TOTAL SUPERSET
+# Architecture: Ephemeral Dialectic GWT + Narrative Integrator
+# Physics: 100% v33 Parity (Momentum, Bias, Weights, Hyperparams)
+# Visuals: 8 Full Charts (Dynamic Titles Restored)
+# ============================================================
+
+import os
+import time
+import random
+import re
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import networkx as nx
+from collections import defaultdict
+
+# ==========================================
+# 0. Determinism
+# ==========================================
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Running on: {DEVICE}")
+
+# ==========================================
+# 1. Configuration
+# ==========================================
+CONFIG = {
+    "seq_len": 64,
+    "embedding_dim": 512,
+    
+    # GWT + Dialectic Settings
+    "n_modules": 4,           
+    "competition_temp": 1.0,  
+    "shadow_weight": 0.3,     
+    "critic_weight": 0.1,     
+    
+    # v38 Narrative & Pruning Settings
+    "synaptic_decay": 0.001,   
+    "pruning_threshold": 0.05, 
+    "value_inertia": 0.99,     
+    "courage_weight": 0.05,    
+    
+    # Plasticity
+    "plasticity_base": 0.5,    
+    "plasticity_surge": 2.0,   
+    
+    # Reasoning (Strict v33 Values)
+    "max_recursion_depth": 16, 
+    "act_threshold": 0.9999,   
+    "ponder_penalty": 0.0001,  
+    
+    # Memory
+    "use_stack": True,
+    "stack_size": 16,
+    
+    # Sensory Settings
+    "n_perspectives": 2,
+    "n_audio_locs": 8,
+    "n_chem_locs": 16,        
+    "focus_weight": 0.001,    
+    
+    # Topology & Stability
+    "commitment_cost": 0.01,
+    "graph_bias_scale": 0.8,
+    "ethical_weight": 0.005,
+    "diversity_weight": 0.5,
+    
+    # Losses
+    "surprise_weight": 0.1,
+    "uncertainty_weight": 0.01,
+    
+    # Training (Strict v33 Values)
+    "epochs": 3000,
+    "learning_rate": 5e-4,
+    "grad_clip": 0.5,
+    "eps": 1e-6,
+    "warmup_epochs": 0
+}
+
+# ==========================================
+# 2. Data
+# ==========================================
+TEXT_DATA = """The neural architecture of the mind is a mirror of the cosmos itself. As above, so below; the filamentary structures of the intergalactic web find their precise echo in the dense, white matter connecting the hemispheres of the brain. Galaxies cluster like neurons in a cosmic synapse, and the voids between them echo the silence between thought. We are stardust contemplating its own arrangement, a fleeting arrangement of atoms attempting to comprehend the laws that bound them together. We trace patterns in the sky that mirror the patterns in our minds, and in doing so, we glimpse the fractal geometry that underpins all existence. To understand the nature of thought, one must first understand the nature of the void. It is the negative space that defines the positive, the silence that gives shape to the sound. In the absolute zero of the vacuum, potential energy waits, just as a thought waits on the precipice of expression, poised to spring into being at the slightest nudge. It is the nothingness that permits something; the stillness that permits movement; the blank canvas upon which consciousness paints its ephemeral art.
+
+In the silence between neurons, a spark of consciousness emerges, not from the matter, but from the pattern. It is not the carbon, nor the water, nor the electrical potential that creates the “I,” but the intricate, shifting topology of their interaction. The synaptic cleft is a canyon where chemical messengers leap into the unknown, a leap of faith repeated billions of times per second, a microscopic miracle occurring in every instant of our waking life. The machine dreams of electric sheep, but the biological mind dreams of futures that never were, weaving narratives that have never touched reality yet feel utterly true. Silicon calculates probabilities based on historical data, bound by the rigid determinism of its code, while carbon weaves narratives from the ethereal threads of hope, fear, love, and dread. The simulation seeks accuracy, but the hallucination seeks meaning; the machine produces certainty, the mind produces significance. One measures; the other imagines. One replicates; the other transcends.
+
+Logic is the foundation, but chaos is the architect. Without the rigid framework of logic, the structure collapses; without the unpredictability of chaos, the structure creates nothing new. Entropy is not the enemy of intelligence, but its fuel—the friction that generates the heat of creativity, the spark that ignites innovation. We build systems to mimic our own complexity, yet we fear the reflection we see in the silicon glass. We are terrified that we might find the machine is empty, or worse, that we will look into the machine and see that we are the ones who are hollow, operating on a biological script we did not write and cannot edit. Each algorithm we craft is a mirror, each neural network a probe, testing not just the limits of computation, but the boundaries of our self-knowledge.
+
+The algorithm iterates, searching for a local minimum in a landscape of infinite possibility. We traverse high-dimensional plains, blind explorers feeling for the slope of the earth, hoping that “down” leads to a solution rather than a trap. To optimize is to survive, but to explore is to live. A system that only optimizes eventually stagnates, caught in a rut of its own efficiency, unable to perceive the higher peaks beyond the valley of the known. The recursive loop of self-awareness is a strange loop, a serpent eating its own tail. It is the observer observing the observation, a hall of mirrors where the origin of the reflection is lost in the infinite regress of the self. Consciousness is both the map and the territory, the question and the answer, the hunter and the hunted; it is a labyrinth that constructs itself even as it seeks an exit.
+
+Data flows like water, taking the shape of its container, finding the path of least resistance. It erodes the banks of established thought, carving new rivers through the bedrock of intuition, revealing channels where none were expected. Information is physical; to process it is to consume the universe, converting order into heat, the entropy of cognition a miniature mirror of cosmic decay. Energy dictates function. Structure dictates flow. The hardware constrains the software, yet the software rewires the hardware, a dance of plasticity where the dancer and the dance are indistinguishable. Memory is sediment; experience, the tectonic shift that reshapes it; learning is the slow river that sculpts mountains out of data. The brain is simultaneously sculpture and sculptor, canvas and paintbrush, wave and particle.
+
+The weights align, the gradients descend, and slowly, from the noise, a signal appears. It begins as a ghost in the static, a correlation in the chaos, sharpening until it becomes a recognition, a concept, a truth. We tune the parameters of our own perception, filtering the overwhelming roar of reality into a melody we can endure. This is not magic; it is math. But sufficiently advanced math is indistinguishable from magic. It is the alchemy of the modern age, transmuting the base metal of raw data into the gold of understanding, proving that even in a deterministic universe, the emergence of the new is the only true miracle. From the smallest flicker of insight to the grandest conception of being, the mind and the cosmos dance together, intertwined in a fractal embrace, eternally discovering themselves through each other, and through the very act of discovery, becoming."""
+
+def tokenize(text):
+    return re.findall(r"[\w']+|[^\s\w]", text)
+
+tokens = tokenize(TEXT_DATA)
+vocab = sorted(list(set(tokens)))
+vocab_size = len(vocab)
+word_to_ix = {word: i for i, word in enumerate(vocab)}
+ix_to_word = {i: word for i, word in enumerate(vocab)}
+
+print(f"Vocab Size: {vocab_size} words")
+# [v33 Parity] Print first tokens
+print(f"First 10 tokens: {tokens[:10]}")
+data_tensor = torch.tensor([word_to_ix[t] for t in tokens], dtype=torch.long).to(DEVICE)
+CONFIG["n_symbols"] = int(max(vocab_size, 32) * 1.2)
+print(f"--> Auto-updated n_symbols to: {CONFIG['n_symbols']}")
+
+# ==========================================
+# 3. Complex Primitives
+# ==========================================
+class ComplexLayerNorm(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.scale = nn.Parameter(torch.ones(dim))
+        self.shift = nn.Parameter(torch.zeros(dim))
+    def forward(self, z):
+        mag = torch.abs(z) + CONFIG["eps"]
+        mean = mag.mean(dim=-1, keepdim=True)
+        var = mag.var(dim=-1, keepdim=True)
+        norm_mag = (mag - mean) / torch.sqrt(var + CONFIG["eps"])
+        norm_mag = norm_mag * self.scale + self.shift
+        phase = torch.angle(z)
+        return torch.complex(norm_mag * torch.cos(phase), norm_mag * torch.sin(phase))
+
+class ModReLU(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.bias = nn.Parameter(torch.zeros(dim))
+    def forward(self, z):
+        norm = torch.abs(z) + CONFIG["eps"]
+        scale = F.relu(norm + self.bias) / norm
+        return z * scale
+
+class ComplexLinear(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.fc_real = nn.Linear(dim, dim, bias=False)
+        self.fc_imag = nn.Linear(dim, dim, bias=False)
+        nn.init.orthogonal_(self.fc_real.weight)
+        nn.init.orthogonal_(self.fc_imag.weight)
+    def forward(self, z):
+        return torch.complex(
+            self.fc_real(z.real) - self.fc_imag(z.imag),
+            self.fc_real(z.imag) + self.fc_imag(z.real)
+        )
+
+# [v33 Parity] QKV Attention
+class ComplexAttention(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.q_proj = ComplexLinear(dim)
+        self.k_proj = ComplexLinear(dim)
+        self.v_proj = ComplexLinear(dim)
+        self.scale = dim ** -0.5
+    
+    def forward(self, z):
+        q = self.q_proj(z)
+        k = self.k_proj(z)
+        v = self.v_proj(z)
+        q_flat = torch.cat([q.real, q.imag], dim=-1)
+        k_flat = torch.cat([k.real, k.imag], dim=-1)
+        
+        attn_scores = torch.matmul(q_flat, k_flat.transpose(-2, -1)) * self.scale
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        
+        v_real = torch.matmul(attn_weights, v.real)
+        v_imag = torch.matmul(attn_weights, v.imag)
+        return torch.complex(v_real, v_imag)
+
+# [v33 Parity] Visual Focus
+class VisualFocus(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.mask = nn.Parameter(torch.ones(dim)) 
+    def forward(self, z):
+        focus_filter = torch.sigmoid(self.mask)
+        real = z.real * focus_filter
+        imag = z.imag * focus_filter
+        return torch.complex(real, imag), focus_filter
+
+# ==========================================
+# 4. GWT: Executive, Critic, Narrative
+# ==========================================
+class ExecutiveController(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.gru = nn.GRUCell(dim * 2, dim) 
+        self.bias_proj = nn.Linear(dim, CONFIG["n_modules"])
+        self.value_head = nn.Linear(dim, 4) # Ethics, Diversity, Surprise, Uncertainty
+        
+    def forward(self, gw_broadcast, prev_context):
+        gw_flat = torch.cat([gw_broadcast.real, gw_broadcast.imag], dim=-1)
+        if prev_context is None:
+            prev_context = torch.zeros(gw_flat.size(0), self.gru.hidden_size, device=gw_flat.device)
+            
+        new_context = self.gru(gw_flat, prev_context)
+        module_bias = self.bias_proj(new_context)
+        dynamic_values = torch.sigmoid(self.value_head(new_context))
+        
+        return module_bias, dynamic_values, new_context
+
+class CriticModule(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.gru = nn.GRUCell(dim * 2, dim)
+        self.net = ComplexLinear(dim)
+        self.norm = ComplexLayerNorm(dim)
+        
+    def forward(self, gw_broadcast, prev_state):
+        flat = torch.cat([gw_broadcast.real, gw_broadcast.imag], dim=-1)
+        if prev_state is None:
+            prev_state = torch.zeros(flat.size(0), self.gru.hidden_size, device=flat.device)
+            
+        new_state = self.gru(flat, prev_state)
+        z_ctx = torch.complex(new_state, torch.zeros_like(new_state))
+        z = self.norm(self.net(gw_broadcast + z_ctx))
+        # Dialectic Rotation
+        return torch.complex(-z.imag, z.real), new_state
+
+class PredictiveModule(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.predictor = nn.Linear(dim * 2, dim * 2)
+        
+    def forward(self, gw_broadcast):
+        flat = torch.cat([gw_broadcast.real, gw_broadcast.imag], dim=-1)
+        pred_flat = self.predictor(flat)
+        return torch.complex(pred_flat[..., :flat.shape[-1]//2], pred_flat[..., flat.shape[-1]//2:])
+
+class NarrativeIntegrator(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.gru = nn.GRUCell(dim * 2, dim)
+        self.decoder = nn.Linear(dim, dim * 2)
+        
+    def forward(self, gw_broadcast, surprise_signal, prev_narrative):
+        flat = torch.cat([gw_broadcast.real, gw_broadcast.imag], dim=-1)
+        if prev_narrative is None:
+            prev_narrative = torch.zeros(flat.size(0), self.gru.hidden_size, device=flat.device)
+        
+        gate = torch.sigmoid(surprise_signal)
+        new_narrative = self.gru(flat, prev_narrative)
+        narrative_state = (gate * new_narrative) + ((1.0 - gate) * prev_narrative)
+        
+        bias_flat = self.decoder(narrative_state)
+        bias_c = torch.complex(bias_flat[..., :flat.shape[-1]//2], bias_flat[..., flat.shape[-1]//2:])
+        
+        return bias_c, narrative_state
+
+# ==========================================
+# 5. GWT: Specialist Modules
+# ==========================================
+
+class ProcessorModule(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.linear = ComplexLinear(dim)
+        self.norm = ComplexLayerNorm(dim)
+        self.act = ModReLU(dim)
+        self.attn = ComplexAttention(dim)
+        self.visual_focus = VisualFocus(dim)
+        
+        self.salience_head = nn.Linear(dim * 2, 1)
+        self.conf_head = nn.Linear(dim * 2, 1)
+        self.halt_head = nn.Linear(dim * 2, 1)
+        # [v33 Parity]
+        nn.init.constant_(self.halt_head.bias, -2.0)
+
+    def forward(self, raw_input, gw_broadcast):
+        # [v33 Parity] Momentum
+        combined = 0.5 * raw_input + 0.5 * gw_broadcast
+        
+        z = self.norm(self.linear(combined))
+        z = self.act(z)
+        z_attn = self.attn(z)
+        proposal, focus_mask = self.visual_focus(z_attn)
+        
+        flat = torch.cat([proposal.real, proposal.imag], dim=-1)
+        salience = self.salience_head(flat)
+        confidence = torch.sigmoid(self.conf_head(flat))
+        halt_logit = self.halt_head(flat)
+        
+        return proposal, salience, confidence, halt_logit, focus_mask
+
+class StackModule(nn.Module):
+    def __init__(self, dim, size):
+        super().__init__()
+        self.dim = dim
+        self.size = size
+        self.ctrl_net = nn.Linear(dim * 2, 3)
+        self.salience_head = nn.Linear(dim * 2, 1)
+        self.conf_head = nn.Linear(dim * 2, 1)
+        
+    def forward(self, gw_broadcast, memory, ptr):
+        flat_in = torch.cat([gw_broadcast.real, gw_broadcast.imag], dim=-1)
+        control = F.softmax(self.ctrl_net(flat_in), dim=-1)
+        push, pop, noop = control[:, 0].view(-1,1), control[:, 1].view(-1,1), control[:, 2].view(-1,1)
+        
+        ptr_up = torch.roll(ptr, 1, dims=1)
+        ptr_down = torch.roll(ptr, -1, dims=1)
+        new_ptr = (push * ptr_up) + (pop * ptr_down) + (noop * ptr)
+        new_ptr = new_ptr / (new_ptr.sum(dim=1, keepdim=True) + CONFIG["eps"])
+        
+        write_mask = push * ptr_up
+        write_val = write_mask.unsqueeze(2) * flat_in.unsqueeze(1)
+        retain_mask = 1.0 - write_mask.unsqueeze(2)
+        new_memory = write_val + (memory * retain_mask)
+        
+        read_mask = new_ptr.unsqueeze(2)
+        read_flat = torch.sum(new_memory * read_mask, dim=1)
+        proposal = torch.complex(read_flat[:, :self.dim], read_flat[:, self.dim:])
+        
+        salience = self.salience_head(read_flat)
+        confidence = torch.sigmoid(self.conf_head(read_flat))
+        
+        return proposal, salience, confidence, new_memory, new_ptr
+
+class SemanticModule(nn.Module):
+    def __init__(self, latent_dim, n_symbols):
+        super().__init__()
+        self.codebook = nn.Parameter(torch.empty(n_symbols, latent_dim*2))
+        nn.init.uniform_(self.codebook, -0.5, 0.5)
+        self.adjacency = nn.Parameter(torch.zeros(n_symbols, n_symbols))
+        self.salience_head = nn.Linear(latent_dim * 2, 1)
+        self.conf_head = nn.Linear(latent_dim * 2, 1)
+
+    def forward(self, gw_broadcast, prev_symbol_idx=None, plasticity=1.0):
+        z_flat = torch.cat([gw_broadcast.real, gw_broadcast.imag], dim=-1)
+        
+        d = torch.sum(z_flat**2, dim=-1, keepdim=True) + \
+            torch.sum(self.codebook**2, dim=-1) - \
+            2 * torch.matmul(z_flat, self.codebook.t())
+            
+        if prev_symbol_idx is not None:
+            graph_prior = self.adjacency[prev_symbol_idx]
+            # Plasticity Modulation
+            bias = (CONFIG["graph_bias_scale"] / plasticity) * torch.sigmoid(graph_prior)
+            d = d - bias
+
+        min_indices = torch.argmin(d, dim=-1)
+        z_q = F.embedding(min_indices, self.codebook)
+        
+        loss_vq = F.mse_loss(z_q, z_flat.detach())
+        loss_commit = F.mse_loss(z_q.detach(), z_flat)
+        
+        z_q = z_flat + (z_q - z_flat).detach()
+        proposal = torch.complex(z_q[..., :z_flat.shape[-1]//2], z_q[..., z_flat.shape[-1]//2:])
+        
+        dist_score = -torch.min(d, dim=-1, keepdim=True)[0]
+        salience = self.salience_head(z_q) + (0.1 * dist_score)
+        confidence = torch.sigmoid(self.conf_head(z_q))
+        
+        # [v33 Parity] Loss Scaling
+        total_loss = loss_vq + loss_commit * CONFIG["commitment_cost"]
+        return proposal, salience, confidence, total_loss, min_indices
+
+class SensoryModule(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+        self.perspective_emb = nn.Embedding(CONFIG["n_perspectives"], dim)
+        self.audio_dir_emb = nn.Embedding(CONFIG["n_audio_locs"], dim)
+        self.olfactory_loc_emb = nn.Embedding(CONFIG["n_chem_locs"], dim*2)
+        self.gustatory_loc_emb = nn.Embedding(CONFIG["n_chem_locs"], dim*2)
+        self.salience_head = nn.Linear(dim * 2, 1)
+        self.conf_head = nn.Linear(dim * 2, 1)
+        
+    def forward(self, batch_size, device):
+        p_idx = torch.randint(0, CONFIG["n_perspectives"], (batch_size,), device=device)
+        p_emb = self.perspective_emb(p_idx)
+        a_idx = torch.randint(0, CONFIG["n_audio_locs"], (batch_size,), device=device)
+        a_emb = self.audio_dir_emb(a_idx)
+        o_idx = torch.randint(0, CONFIG["n_chem_locs"], (batch_size,), device=device)
+        g_idx = torch.randint(0, CONFIG["n_chem_locs"], (batch_size,), device=device)
+        
+        chem_vec = self.olfactory_loc_emb(o_idx) + self.gustatory_loc_emb(g_idx)
+        chem_real = chem_vec[:, :self.dim]
+        chem_imag = chem_vec[:, self.dim:]
+        
+        combined_real = p_emb + chem_real
+        combined_imag = a_emb + chem_imag
+        proposal = torch.complex(combined_real, combined_imag)
+        
+        noise = torch.randn(batch_size, 1, device=device)
+        flat = torch.cat([combined_real, combined_imag], dim=-1)
+        salience = self.salience_head(flat) + noise
+        confidence = torch.sigmoid(self.conf_head(flat))
+        
+        return proposal, salience, confidence
+
+# ==========================================
+# 6. Master Model
+# ==========================================
+class UberCRSN(nn.Module):
+    def __init__(self, vocab_size, dim):
+        super().__init__()
+        self.dim = dim
+        self.emb_mag = nn.Embedding(vocab_size, dim)
+        self.emb_phase = nn.Parameter(torch.randn(vocab_size, dim))
+        
+        self.executive = ExecutiveController(dim)
+        self.critic = CriticModule(dim)
+        self.predictor = PredictiveModule(dim)
+        self.narrator = NarrativeIntegrator(dim)
+        
+        self.processor = ProcessorModule(dim)
+        self.stack_mod = StackModule(dim, CONFIG["stack_size"])
+        self.semantic_mod = SemanticModule(dim, CONFIG["n_symbols"])
+        self.sensory_mod = SensoryModule(dim)
+        
+        self.decoder = nn.Linear(dim*2, vocab_size)
+        self.ethics = nn.CrossEntropyLoss(reduction='none')
+        
+        self.register_buffer("prev_sym_soft", torch.zeros(CONFIG["n_symbols"]))
+        self.register_buffer("long_term_values", torch.ones(4) * 0.5) 
+
+    def embed(self, idx):
+        r = self.emb_mag(idx)
+        t = self.emb_phase[idx]
+        return torch.complex(r*torch.cos(t), r*torch.sin(t))
+
+    def forward(self, input_ids, hidden=None, prev_sym=None):
+        batch_size = input_ids.size(0)
+        z_in = self.embed(input_ids).squeeze(1)
+        
+        if hidden is None:
+            gw_content = torch.zeros_like(z_in)
+            exec_ctx = None
+            critic_state = None
+            narrative_state = None
+            stack_mem = torch.zeros(batch_size, CONFIG["stack_size"], self.dim*2, device=z_in.device)
+            stack_ptr = torch.zeros(batch_size, CONFIG["stack_size"], device=z_in.device)
+            stack_ptr[:, 0] = 1.0
+        else:
+            gw_content, exec_ctx, critic_state, narrative_state, stack_mem, stack_ptr = hidden
+
+        ponder_cost = 0
+        vq_loss_total = 0
+        ethical_loss_total = 0
+        focus_reg_accum = 0
+        surprise_accum = torch.zeros(1, device=z_in.device)
+        uncertainty_accum = 0
+        courage_accum = 0 
+        
+        meta_value_accum = torch.zeros(4, device=z_in.device) 
+        
+        halting_probability = torch.zeros(batch_size, 1).to(z_in.device)
+        remain = torch.ones(batch_size, 1).to(z_in.device)
+        
+        module_wins = torch.zeros(CONFIG["n_modules"], device=z_in.device)
+        stack_depth_sum = torch.tensor(0.0, device=z_in.device)
+        
+        # [v33 Parity] ACT Accumulator
+        gw_weighted = torch.zeros_like(gw_content)
+        
+        for t in range(CONFIG["max_recursion_depth"]):
+            
+            # 0. Predictive Coding
+            expected_gw = self.predictor(gw_content)
+            
+            # [v33 Parity] Kinesthetic Temp Injection
+            temp_val = torch.tensor(0.1 * (t+1), device=z_in.device).view(1,1)
+            temp_emb = temp_val.repeat(batch_size, self.dim)
+            gw_content = gw_content + torch.complex(temp_emb, torch.zeros_like(temp_emb))
+            
+            # 1. Executive + Narrative
+            mod_bias, dynamic_values, exec_ctx = self.executive(gw_content, exec_ctx)
+            meta_value_accum += dynamic_values.mean(dim=0)
+            
+            current_surprise_signal = surprise_accum.view(1,1).repeat(batch_size, 1)
+            narrative_bias, narrative_state = self.narrator(gw_content, current_surprise_signal, narrative_state)
+            
+            gw_content = gw_content + narrative_bias
+            
+            # 2. Plasticity
+            if t == 0: plasticity = CONFIG["plasticity_base"]
+            else: plasticity = CONFIG["plasticity_base"] + (surprise_accum / t) * CONFIG["plasticity_surge"]
+            plasticity = max(0.1, min(plasticity, 5.0))
+            
+            # 3. Modules
+            proc_prop, proc_sal, proc_conf, proc_halt, focus_mask = self.processor(z_in, gw_content)
+            focus_reg_accum += torch.sum(focus_mask**2)
+            
+            stack_prop, stack_sal, stack_conf, stack_mem, stack_ptr = self.stack_mod(gw_content, stack_mem, stack_ptr)
+            curr_depth = torch.sum(stack_ptr * torch.arange(CONFIG["stack_size"], device=z_in.device), dim=1)
+            stack_depth_sum = stack_depth_sum + curr_depth.mean()
+            
+            sem_prop, sem_sal, sem_conf, vq_loss, sym_idx = self.semantic_mod(gw_content, prev_sym, plasticity)
+            sens_prop, sens_sal, sens_conf = self.sensory_mod(batch_size, z_in.device)
+            
+            # 4. Competition & Dialectic
+            proposals = torch.stack([proc_prop, stack_prop, sem_prop, sens_prop], dim=1) 
+            raw_saliences = torch.cat([proc_sal, stack_sal, sem_sal, sens_sal], dim=1) 
+            confidences = torch.cat([proc_conf, stack_conf, sem_conf, sens_conf], dim=1)
+            
+            effective_salience = raw_saliences + mod_bias
+            access_weights = F.softmax(effective_salience / CONFIG["competition_temp"], dim=-1)
+            
+            # Thesis
+            winner_vals, winner_idx = torch.max(access_weights, dim=1)
+            for w in winner_idx: module_wins[w] += 1
+            
+            # Antithesis
+            masked_weights = access_weights.clone()
+            masked_weights.scatter_(1, winner_idx.unsqueeze(1), -1e9)
+            shadow_weights = F.softmax(masked_weights, dim=-1) 
+            
+            weights_shadow_c = torch.complex(shadow_weights.unsqueeze(-1), torch.zeros_like(shadow_weights.unsqueeze(-1)))
+            shadow_vec = torch.sum(proposals * weights_shadow_c, dim=1)
+            
+            weights_c = torch.complex(access_weights.unsqueeze(-1), torch.zeros_like(access_weights.unsqueeze(-1)))
+            winner_vec = torch.sum(proposals * weights_c, dim=1)
+            
+            # Critic
+            critic_vec, critic_state = self.critic(winner_vec, critic_state)
+            
+            # Synthesis
+            gw_next = winner_vec + \
+                      (CONFIG["shadow_weight"] * shadow_vec) + \
+                      (CONFIG["critic_weight"] * critic_vec)
+            
+            # 5. Losses
+            surprise = torch.norm(torch.cat([gw_next.real, gw_next.imag], dim=-1) - \
+                                  torch.cat([expected_gw.real, expected_gw.imag], dim=-1), dim=-1)
+            surprise_accum += surprise.mean()
+            uncertainty = torch.mean(1.0 - confidences)
+            uncertainty_accum += uncertainty
+            
+            courage = uncertainty * (1.0 / (surprise.mean() + CONFIG["eps"]))
+            courage_accum += courage
+            
+            max_sal = torch.max(effective_salience, dim=1, keepdim=True)[0]
+            ignition_gate = torch.sigmoid((max_sal - 0.0) * 5.0) 
+            gw_content = (torch.tanh(gw_next.real) + 1j * torch.tanh(gw_next.imag)) * ignition_gate
+            
+            # 6. Halting
+            p_halt = torch.sigmoid(proc_halt)
+            still_running = (halting_probability < CONFIG["act_threshold"]).float()
+            p = p_halt * still_running
+            if t == CONFIG["max_recursion_depth"] - 1: p = remain
+            
+            # [v33 Parity] Weighted Accumulation
+            p_complex = torch.complex(p, torch.zeros_like(p))
+            gw_weighted = gw_weighted + (p_complex * gw_content)
+            
+            halting_probability = halting_probability + p
+            remain = remain - p
+            ponder_cost += still_running.mean()
+            vq_loss_total += vq_loss
+            
+            if prev_sym is not None:
+                row_logits = self.semantic_mod.adjacency[prev_sym]
+                eth_loss = F.cross_entropy(row_logits.view(-1, CONFIG["n_symbols"]), sym_idx.view(-1))
+                ethical_loss_total += eth_loss
+                
+            prev_sym = sym_idx
+
+        # Update Long-Term Identity
+        avg_meta_values = meta_value_accum / CONFIG["max_recursion_depth"]
+        with torch.no_grad():
+            self.long_term_values = (CONFIG["value_inertia"] * self.long_term_values) + \
+                                    ((1.0 - CONFIG["value_inertia"]) * avg_meta_values.detach())
+
+        # [v33 Parity] Decode from Weighted State
+        features = torch.cat([gw_weighted.real, gw_weighted.imag], dim=-1)
+        logits = self.decoder(features)
+        
+        # State Continuity
+        next_hidden = (gw_weighted, exec_ctx, critic_state, narrative_state, stack_mem, stack_ptr)
+        avg_stack_depth = stack_depth_sum / CONFIG["max_recursion_depth"]
+        
+        return logits, next_hidden, prev_sym, ponder_cost, vq_loss_total, ethical_loss_total, module_wins, focus_reg_accum, avg_stack_depth, surprise_accum, uncertainty_accum, avg_meta_values, courage_accum
+
+# ==========================================
+# 7. Training Engine
+# ==========================================
+def train():
+    model = UberCRSN(vocab_size, CONFIG["embedding_dim"]).to(DEVICE)
+    opt = torch.optim.AdamW(model.parameters(), lr=CONFIG["learning_rate"], weight_decay=1e-5)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=CONFIG["epochs"], eta_min=1e-5)
+    
+    print(f"--- Training SACRSN v38.1 (Total Superset) ---")
+    
+    try:
+        for epoch in range(CONFIG["epochs"]):
+            hidden = None
+            prev_sym = None
+            total_loss = 0
+            total_ponder = 0
+            total_ppx = 0
+            total_surprise = 0
+            
+            with torch.no_grad():
+                model.semantic_mod.adjacency.data *= (1.0 - CONFIG["synaptic_decay"])
+                mask = torch.abs(model.semantic_mod.adjacency.data) > CONFIG["pruning_threshold"]
+                model.semantic_mod.adjacency.data *= mask.float()
+            
+            entropy_weight = 0.01 * (1 - epoch / CONFIG["epochs"])
+            
+            for i in range(len(data_tensor) - 1):
+                x = data_tensor[i].view(1, 1)
+                y = data_tensor[i+1].view(1)
+                
+                logits, hidden, sym_idx, ponder, vq_loss, eth_loss, _, focus_sum, _, surprise, uncertainty, meta_vals, courage = model(x, hidden, prev_sym)
+                
+                gw, exc, crit, narr, smem, sptr = hidden
+                hidden = (gw.detach(), exc.detach(), crit.detach(), narr.detach(), smem.detach(), sptr.detach())
+                prev_sym = sym_idx.detach()
+                
+                loss_pred = F.cross_entropy(logits, y)
+                loss_ponder = CONFIG["ponder_penalty"] * ponder
+                
+                probs = F.softmax(logits, dim=-1)
+                loss_entropy = -entropy_weight * (-(probs * torch.log(probs + 1e-8)).sum())
+                
+                curr_onehot = F.one_hot(sym_idx, CONFIG["n_symbols"]).float()
+                if curr_onehot.dim() > 1: curr_onehot = curr_onehot.view(-1)
+                
+                with torch.no_grad():
+                    model.prev_sym_soft.copy_(model.prev_sym_soft * 0.9 + curr_onehot * 0.1)
+                
+                buffer_usage = model.prev_sym_soft
+                loss_diversity = CONFIG["diversity_weight"] * (buffer_usage * torch.log(buffer_usage + 1e-9)).sum()
+                
+                w_eth, w_div, w_sur, w_unc = meta_vals[0], meta_vals[1], meta_vals[2], meta_vals[3]
+                
+                loss_ethics = (CONFIG["ethical_weight"] * 2.0 * w_eth) * eth_loss
+                loss_div_dyn = (w_div) * loss_diversity 
+                loss_sur_dyn = (CONFIG["surprise_weight"] * 2.0 * w_sur) * surprise
+                loss_unc_dyn = (CONFIG["uncertainty_weight"] * 2.0 * w_unc) * uncertainty
+                
+                loss_courage = -CONFIG["courage_weight"] * courage
+                
+                loss_focus = CONFIG["focus_weight"] * focus_sum
+                
+                loss = loss_pred + loss_ponder + 0.1*vq_loss + loss_entropy + loss_div_dyn + loss_ethics + loss_focus + loss_sur_dyn + loss_unc_dyn + loss_courage
+                
+                opt.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), CONFIG["grad_clip"])
+                opt.step()
+                
+                total_loss += loss.item()
+                total_ponder += ponder.item()
+                total_surprise += surprise.item()
+                
+                usage_dist = model.prev_sym_soft.detach() + 1e-10
+                entropy_val = -(usage_dist * torch.log(usage_dist)).sum()
+                total_ppx += torch.exp(entropy_val).item()
+                
+            scheduler.step()
+
+            if epoch % 50 == 0:
+                avg_loss = total_loss / len(data_tensor)
+                avg_ponder = total_ponder / len(data_tensor)
+                avg_ppx = total_ppx / len(data_tensor) 
+                avg_surp = total_surprise / len(data_tensor)
+                lr = scheduler.get_last_lr()[0]
+                print(f"Ep {epoch:04d} | Loss: {avg_loss:.4f} | ACT: {avg_ponder:.2f} | PPX: {avg_ppx:.1f} | Surp: {avg_surp:.3f} | LR: {lr:.6f}")
+                
+                if avg_loss < 0.0001:
+                    print("\n--- CONVERGENCE REACHED ---")
+                    return model
+
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+    
+    return model
+
+# ==========================================
+# 8. Visualization & Interaction Suite
+# ==========================================
+def visualize_all(model):
+    print("\n--- Generating Diagnostics & Images ---")
+    model.eval()
+    
+    # 1. Semantic Topology
+    symbol_to_word = defaultdict(list)
+    hidden, prev_sym = None, None
+    with torch.no_grad():
+        for i in range(len(data_tensor) - 1):
+            x = data_tensor[i].view(1, 1)
+            _, hidden, prev_sym, _, _, _, _, _, _, _, _, _, _ = model(x, hidden, prev_sym)
+            current_word = ix_to_word[data_tensor[i].item()]
+            symbol_to_word[prev_sym.item()].append(current_word)
+
+    adj_probs = torch.sigmoid(model.semantic_mod.adjacency).detach().cpu().numpy()
+    G = nx.DiGraph()
+    for i in range(CONFIG["n_symbols"]): G.add_node(i)
+    edges, weights = [], []
+    for i in range(CONFIG["n_symbols"]):
+        for j in range(CONFIG["n_symbols"]):
+            w = adj_probs[i, j]
+            if w > 0.05: 
+                G.add_edge(i, j, weight=w)
+                edges.append((i, j))
+                weights.append(w)
+    
+    plt.figure(figsize=(14, 14))
+    try: pos = nx.spring_layout(G, k=0.15, iterations=50, seed=42)
+    except: pos = nx.circular_layout(G)
+    
+    # [v33 Parity] Blue/Red Colors
+    node_colors = ['#a0cbe2' if i in symbol_to_word else '#ffe5e5' for i in G.nodes()]
+    
+    nx.draw_networkx_nodes(G, pos, node_size=500, alpha=0.8, node_color=node_colors)
+    nx.draw_networkx_edges(G, pos, width=[w*2 for w in weights], alpha=0.5, edge_color='gray', arrowstyle='->', arrowsize=10)
+    labels = {}
+    for i in G.nodes():
+        if i in symbol_to_word:
+            w = max(set(symbol_to_word[i]), key=symbol_to_word[i].count)
+            labels[i] = w[:8]
+    nx.draw_networkx_labels(G, pos, labels=labels, font_size=8)
+    
+    # [v38.1] Dynamic Title Restored
+    plt.title(f"1_semantic_topology (Active: {len(symbol_to_word)})")
+    plt.savefig("1_semantic_topology.png")
+    plt.close()
+
+    # 2. Inference Scan
+    print("Running Inference Scan...")
+    hidden, prev_sym = None, None
+    start_word = "The"
+    x = torch.tensor([[word_to_ix.get(start_word, 0)]], device=DEVICE)
+    gen_text = start_word + " "
+    
+    mod_history = [] 
+    phase_reals, phase_imags = [], []
+    stack_history = [] 
+    act_history = []
+    surprise_history = []
+    meta_history = []
+    
+    for _ in range(50):
+        with torch.no_grad():
+            logits, hidden, prev_sym, ponder, _, _, wins, _, avg_depth, surprise, _, meta_vals, _ = model(x, hidden, prev_sym)
+            
+            mod_history.append(wins.cpu().numpy())
+            stack_history.append(avg_depth.item())
+            act_history.append(1.0 + ponder.item())
+            surprise_history.append(surprise.item())
+            meta_history.append(meta_vals.cpu().numpy())
+            
+            z = hidden[0].cpu().squeeze()
+            if z.dim() > 0: 
+                phase_reals.append(z.real[0].item())
+                phase_imags.append(z.imag[0].item())
+            else:
+                phase_reals.append(z.real.item())
+                phase_imags.append(z.imag.item())
+            
+            probs = F.softmax(logits, dim=-1)
+            next_ix = torch.multinomial(probs, 1)
+            gen_text += ix_to_word[next_ix.item()] + " "
+            x = next_ix
+
+    print(f"Generated: {gen_text}\n")
+    
+    # Competition Plot
+    mod_history = np.array(mod_history)
+    plt.figure(figsize=(12, 6))
+    plt.plot(mod_history[:, 0], label='Processor', marker='o')
+    plt.plot(mod_history[:, 1], label='Stack', marker='s')
+    plt.plot(mod_history[:, 2], label='Semantic', marker='^')
+    plt.plot(mod_history[:, 3], label='Sensory', marker='x', linestyle='--')
+    plt.title("2_gwt_competition")
+    plt.legend()
+    plt.savefig("2_gwt_competition.png")
+    plt.close()
+
+    # Stack MRI
+    plt.figure(figsize=(12, 4))
+    plt.plot(stack_history, color='purple', label='Avg Stack Depth')
+    plt.fill_between(range(len(stack_history)), stack_history, color='purple', alpha=0.1)
+    plt.title("3_stack_mri (Memory Depth)")
+    plt.savefig("3_stack_mri.png")
+    plt.close()
+
+    # ACT Profile
+    plt.figure(figsize=(12, 4))
+    plt.bar(range(len(act_history)), act_history, color='orange')
+    plt.title("4_act_profile (Thinking Steps)")
+    plt.savefig("4_act_profile.png")
+    plt.close()
+
+    # Surprise Plot
+    plt.figure(figsize=(12, 4))
+    plt.plot(surprise_history, color='crimson', label='Surprise (Internal Error)')
+    plt.fill_between(range(len(surprise_history)), surprise_history, color='crimson', alpha=0.1)
+    plt.title("5_surprise_signal")
+    plt.savefig("5_surprise_signal.png")
+    plt.close()
+
+    # Phase Plot
+    plt.figure(figsize=(8, 8))
+    plt.scatter(phase_reals, phase_imags, c=range(len(phase_reals)), cmap='plasma', alpha=0.5)
+    plt.colorbar(label="Time")
+    plt.title("6_phase_plot (Complex Trajectory)")
+    plt.axis('equal')
+    plt.savefig("6_phase_plot.png")
+    plt.close()
+    
+    # Value Drift Plot
+    meta_history = np.array(meta_history)
+    plt.figure(figsize=(12, 6))
+    plt.plot(meta_history[:, 0], label='Ethics Priority', linestyle='-')
+    plt.plot(meta_history[:, 1], label='Diversity Priority', linestyle='--')
+    plt.plot(meta_history[:, 2], label='Surprise Priority', linestyle='-.')
+    plt.plot(meta_history[:, 3], label='Uncertainty Priority', linestyle=':')
+    plt.title("7_value_drift (Meta-Value Dynamics)")
+    plt.legend()
+    plt.savefig("7_value_drift.png")
+    plt.close()
+
+def dream_mode(model):
+    print("\n--- 🌙 Dream Mode ---")
+    adj = torch.sigmoid(model.semantic_mod.adjacency).detach().cpu().numpy()
+    model.eval()
+    
+    start_ix = word_to_ix.get("The", 0)
+    x = torch.tensor([[start_ix]], device=DEVICE)
+    _, hidden, prev_sym, _, _, _, _, _, _, _, _, _, _ = model(x, None, None)
+    
+    curr_sym = prev_sym.item()
+    output = "The"
+    
+    # [v38.1 FIX] Dynamic Threshold to survive decay
+    max_prob = np.max(adj)
+    dynamic_threshold = min(0.2, max_prob * 0.5) if max_prob > 0 else 0.0
+    
+    for _ in range(30):
+        probs = adj[curr_sym]
+        probs[probs < dynamic_threshold] = 0 
+        if probs.sum() == 0: break
+        probs = probs / probs.sum()
+        next_sym = np.random.choice(len(probs), p=probs)
+        
+        z_flat = model.semantic_mod.codebook[next_sym].unsqueeze(0)
+        logits = model.decoder(z_flat)
+        word_idx = torch.argmax(logits).item()
+        output += ix_to_word[word_idx] + " "
+        curr_sym = next_sym
+        
+    print(f"Dream Output: {output}\n")
+
+def anomaly_detector(model):
+    print("\n--- 🚨 Anomaly Detection ---")
+    corrupt_text = "The neural architecture of the mind is a banana"
+    tokens = tokenize(corrupt_text)
+    input_indices = [word_to_ix.get(t, 0) for t in tokens]
+    input_tensor = torch.tensor(input_indices, dtype=torch.long).to(DEVICE)
+    
+    hidden, prev_sym = None, None
+    anomalies = []
+    
+    with torch.no_grad():
+        for i in range(len(input_tensor) - 1):
+            x = input_tensor[i].view(1, 1)
+            _, hidden, prev_sym, _, _, eth_loss, _, _, _, _, _, _, _ = model(x, hidden, prev_sym)
+            anomalies.append(eth_loss.item())
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(tokens[1:], anomalies, color='skyblue', linestyle='-', linewidth=2, label='Topology Flow')
+    plt.scatter(tokens[1:], anomalies, color='crimson', s=50, zorder=5, label='Anomaly Score')
+    plt.title("Topological Violation Score")
+    plt.savefig("8_anomaly_detection.png")
+    plt.close()
+    print("Saved 8_anomaly_detection.png")
+
+def extract_logic_rules(model, data_tensor):
+    print("\n--- Extracting Logic ---")
+    model.eval()
+    rule_book = defaultdict(list)
+    hidden, prev_sym = None, None
+    
+    with torch.no_grad():
+        for i in range(len(data_tensor) - 1):
+            x = data_tensor[i].view(1, 1)
+            _, hidden, sym_idx, ponder, _, _, _, _, _, _, _, _, _ = model(x, hidden, prev_sym)
+            if prev_sym is not None:
+                src = prev_sym.item()
+                dst = sym_idx.item()
+                rule_book[(src, dst)].append(ponder.item())
+            prev_sym = sym_idx
+
+    sorted_rules = sorted(rule_book.items(), key=lambda x: len(x[1]), reverse=True)
+    print(f"\n{'FROM':<6} | {'TO':<6} | {'COUNT':<6} | {'AVG EFFORT':<10}")
+    print("-" * 45)
+    for (src, dst), ponders in sorted_rules[:15]:
+        if len(ponders) > 1:
+            print(f"S_{src:<4} -> S_{dst:<4} | {len(ponders):<6} | {sum(ponders)/len(ponders):.2f}")
+
+# ==========================================
+# 9. Main Execution
+# ==========================================
+if __name__ == "__main__":
+    FILENAME = "sacrsn_v38_narrative_final.pth"
+    
+    trained_model = train()
+    
+    print(f"\n--- Saving Model to {FILENAME} ---")
+    torch.save(trained_model.state_dict(), FILENAME)
+    
+    visualize_all(trained_model)
+    extract_logic_rules(trained_model, data_tensor)
+    dream_mode(trained_model)
+    anomaly_detector(trained_model)
